@@ -104,7 +104,7 @@ func (r *Reader) Reset(input io.Reader) {
 	r.frameSizeUnknown = false
 	r.remainingFrameSize = 0
 	r.blockOffset = 0
-	// buffer
+	r.buffer = r.buffer[:0]
 	r.off = 0
 	// repeatedOffset1
 	// repeatedOffset2
@@ -169,7 +169,7 @@ retry:
 
 	// Read magic number. RFC 3.1.1.
 	if _, err := io.ReadFull(r.r, r.scratch[:4]); err != nil {
-		// We require that the stream contain at least one frame.
+		// We require that the stream contains at least one frame.
 		if err == io.EOF && !r.readOneFrame {
 			err = io.ErrUnexpectedEOF
 		}
@@ -183,6 +183,7 @@ retry:
 			if err := r.skipFrame(); err != nil {
 				return err
 			}
+			r.readOneFrame = true
 			goto retry
 		}
 
@@ -220,13 +221,15 @@ retry:
 		r.checksum.reset()
 	}
 
-	if descriptor&3 != 0 {
-		return r.makeError(relativeOffset, "dictionaries are not supported")
+	// Dictionary_ID_Flag. RFC 3.1.1.1.1.6.
+	dictionaryIdSize := 0
+	if dictIdFlag := descriptor & 3; dictIdFlag != 0 {
+		dictionaryIdSize = 1 << (dictIdFlag - 1)
 	}
 
 	relativeOffset++
 
-	headerSize := windowDescriptorSize + fcsFieldSize
+	headerSize := windowDescriptorSize + dictionaryIdSize + fcsFieldSize
 
 	if _, err := io.ReadFull(r.r, r.scratch[:headerSize]); err != nil {
 		return r.wrapNonEOFError(relativeOffset, err)
@@ -235,10 +238,7 @@ retry:
 	// Figure out the maximum amount of data we need to retain
 	// for backreferences.
 	var windowSize int
-	if singleSegment {
-		// No window required, as all the data is in a single buffer.
-		windowSize = 0
-	} else {
+	if !singleSegment {
 		// Window descriptor. RFC 3.1.1.1.2.
 		windowDescriptor := r.scratch[0]
 		exponent := uint64(windowDescriptor >> 3)
@@ -252,17 +252,23 @@ retry:
 		if fuzzing && (windowLog > 31 || windowSize > 1<<27) {
 			return r.makeError(relativeOffset, "windowSize too large")
 		}
+	}
 
-		// RFC 8878 permits us to set an 8M max on window size.
-		if windowSize > 8<<20 {
-			windowSize = 8 << 20
+	// Dictionary_ID. RFC 3.1.1.1.3.
+	if dictionaryIdSize != 0 {
+		dictionaryId := r.scratch[windowDescriptorSize : windowDescriptorSize+dictionaryIdSize]
+		// Allow only zero Dictionary ID.
+		for _, b := range dictionaryId {
+			if b != 0 {
+				return r.makeError(relativeOffset, "dictionaries are not supported")
+			}
 		}
 	}
 
-	// Frame_Content_Size. RFC 3.1.1.4.
+	// Frame_Content_Size. RFC 3.1.1.1.4.
 	r.frameSizeUnknown = false
 	r.remainingFrameSize = 0
-	fb := r.scratch[windowDescriptorSize:]
+	fb := r.scratch[windowDescriptorSize+dictionaryIdSize:]
 	switch fcsFieldSize {
 	case 0:
 		r.frameSizeUnknown = true
@@ -276,6 +282,18 @@ retry:
 		r.remainingFrameSize = binary.LittleEndian.Uint64(fb)
 	default:
 		panic("unreachable")
+	}
+
+	// RFC 3.1.1.1.2.
+	// When Single_Segment_Flag is set, Window_Descriptor is not present.
+	// In this case, Window_Size is Frame_Content_Size.
+	if singleSegment {
+		windowSize = int(r.remainingFrameSize)
+	}
+
+	// RFC 8878 3.1.1.1.1.2. permits us to set an 8M max on window size.
+	if windowSize > 8<<20 {
+		windowSize = 8 << 20
 	}
 
 	relativeOffset += headerSize

@@ -184,7 +184,7 @@ func (n *BinaryExpr) SetOp(op Op) {
 // A CallExpr is a function call X(Args).
 type CallExpr struct {
 	miniExpr
-	X         Node
+	Fun       Node
 	Args      Nodes
 	DeferAt   Node
 	RType     Node    `mknode:"-"` // see reflectdata/helpers.go
@@ -194,7 +194,7 @@ type CallExpr struct {
 }
 
 func NewCallExpr(pos src.XPos, op Op, fun Node, args []Node) *CallExpr {
-	n := &CallExpr{X: fun}
+	n := &CallExpr{Fun: fun}
 	n.pos = pos
 	n.SetOp(op)
 	n.Args = args
@@ -211,7 +211,7 @@ func (n *CallExpr) SetOp(op Op) {
 		OCALL, OCALLFUNC, OCALLINTER, OCALLMETH,
 		ODELETE,
 		OGETG, OGETCALLERPC, OGETCALLERSP,
-		OMAKE, OMAX, OMIN, OPRINT, OPRINTN,
+		OMAKE, OMAX, OMIN, OPRINT, OPRINTLN,
 		ORECOVER, ORECOVERFP:
 		n.op = op
 	}
@@ -673,6 +673,9 @@ type TypeAssertExpr struct {
 	// Runtime type information provided by walkDotType for
 	// assertions from non-empty interface to concrete type.
 	ITab Node `mknode:"-"` // *runtime.itab for Type implementing X's type
+
+	// An internal/abi.TypeAssert descriptor to pass to the runtime.
+	Descriptor *obj.LSym
 }
 
 func NewTypeAssertExpr(pos src.XPos, x Node, typ *types.Type) *TypeAssertExpr {
@@ -1138,7 +1141,7 @@ func MethodSym(recv *types.Type, msym *types.Sym) *types.Sym {
 	return sym
 }
 
-// MethodSymSuffix is like methodsym, but allows attaching a
+// MethodSymSuffix is like MethodSym, but allows attaching a
 // distinguisher suffix. To avoid collisions, the suffix must not
 // start with a letter, number, or period.
 func MethodSymSuffix(recv *types.Type, msym *types.Sym, suffix string) *types.Sym {

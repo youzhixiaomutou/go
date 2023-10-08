@@ -1445,23 +1445,22 @@ func TestPathValue(t *testing.T) {
 				"d": "",
 			},
 		},
-		// TODO(jba): uncomment these tests when we implement path escaping (forthcoming).
-		// {
-		// 	"/names/{name}/{other...}",
-		// 	"/names/" + url.PathEscape("/john") + "/address",
-		// 	map[string]string{
-		// 		"name":  "/john",
-		// 		"other": "address",
-		// 	},
-		// },
-		// {
-		// 	"/names/{name}/{other...}",
-		// 	"/names/" + url.PathEscape("john/doe") + "/address",
-		// 	map[string]string{
-		// 		"name":  "john/doe",
-		// 		"other": "address",
-		// 	},
-		// },
+		{
+			"/names/{name}/{other...}",
+			"/names/%2fjohn/address",
+			map[string]string{
+				"name":  "/john",
+				"other": "address",
+			},
+		},
+		{
+			"/names/{name}/{other...}",
+			"/names/john%2Fdoe/there/is%2F/more",
+			map[string]string{
+				"name":  "john/doe",
+				"other": "there/is//more",
+			},
+		},
 	} {
 		mux := NewServeMux()
 		mux.HandleFunc(test.pattern, func(w ResponseWriter, r *Request) {

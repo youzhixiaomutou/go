@@ -44,6 +44,8 @@ const (
 //go:cgo_import_dynamic runtime._PostQueuedCompletionStatus PostQueuedCompletionStatus%4 "kernel32.dll"
 //go:cgo_import_dynamic runtime._RaiseFailFastException RaiseFailFastException%3 "kernel32.dll"
 //go:cgo_import_dynamic runtime._ResumeThread ResumeThread%1 "kernel32.dll"
+//go:cgo_import_dynamic runtime._RtlLookupFunctionEntry RtlLookupFunctionEntry%3 "kernel32.dll"
+//go:cgo_import_dynamic runtime._RtlVirtualUnwind  RtlVirtualUnwind%8 "kernel32.dll"
 //go:cgo_import_dynamic runtime._SetConsoleCtrlHandler SetConsoleCtrlHandler%2 "kernel32.dll"
 //go:cgo_import_dynamic runtime._SetErrorMode SetErrorMode%1 "kernel32.dll"
 //go:cgo_import_dynamic runtime._SetEvent SetEvent%1 "kernel32.dll"
@@ -99,6 +101,8 @@ var (
 	_QueryPerformanceCounter,
 	_RaiseFailFastException,
 	_ResumeThread,
+	_RtlLookupFunctionEntry,
+	_RtlVirtualUnwind,
 	_SetConsoleCtrlHandler,
 	_SetErrorMode,
 	_SetEvent,
@@ -138,7 +142,6 @@ var (
 	// Load ntdll.dll manually during startup, otherwise Mingw
 	// links wrong printf function to cgo executable (see issue
 	// 12030 for details).
-	_NtWaitForSingleObject  stdFunction
 	_RtlGetCurrentPeb       stdFunction
 	_RtlGetNtVersionNumbers stdFunction
 
@@ -269,7 +272,6 @@ func loadOptionalSyscalls() {
 	if n32 == 0 {
 		throw("ntdll.dll not found")
 	}
-	_NtWaitForSingleObject = windowsFindfunc(n32, []byte("NtWaitForSingleObject\000"))
 	_RtlGetCurrentPeb = windowsFindfunc(n32, []byte("RtlGetCurrentPeb\000"))
 	_RtlGetNtVersionNumbers = windowsFindfunc(n32, []byte("RtlGetNtVersionNumbers\000"))
 
@@ -1068,8 +1070,16 @@ func stdcall7(fn stdFunction, a0, a1, a2, a3, a4, a5, a6 uintptr) uintptr {
 	return stdcall(fn)
 }
 
+//go:nosplit
+//go:cgo_unsafe_args
+func stdcall8(fn stdFunction, a0, a1, a2, a3, a4, a5, a6, a7 uintptr) uintptr {
+	mp := getg().m
+	mp.libcall.n = 8
+	mp.libcall.args = uintptr(noescape(unsafe.Pointer(&a0)))
+	return stdcall(fn)
+}
+
 // These must run on the system stack only.
-func usleep2(dt int32)
 
 //go:nosplit
 func osyield_no_g() {
@@ -1085,23 +1095,27 @@ func osyield() {
 
 //go:nosplit
 func usleep_no_g(us uint32) {
-	dt := -10 * int32(us) // relative sleep (negative), 100ns units
-	usleep2(dt)
+	timeout := uintptr(us) / 1000 // ms units
+	args := [...]uintptr{_INVALID_HANDLE_VALUE, timeout}
+	stdcall_no_g(_WaitForSingleObject, len(args), uintptr(noescape(unsafe.Pointer(&args[0]))))
 }
 
 //go:nosplit
 func usleep(us uint32) {
 	systemstack(func() {
-		dt := -10 * int64(us) // relative sleep (negative), 100ns units
+		var h, timeout uintptr
 		// If the high-res timer is available and its handle has been allocated for this m, use it.
 		// Otherwise fall back to the low-res one, which doesn't need a handle.
 		if haveHighResTimer && getg().m.highResTimer != 0 {
-			h := getg().m.highResTimer
+			h = getg().m.highResTimer
+			dt := -10 * int64(us) // relative sleep (negative), 100ns units
 			stdcall6(_SetWaitableTimer, h, uintptr(unsafe.Pointer(&dt)), 0, 0, 0, 0)
-			stdcall3(_NtWaitForSingleObject, h, 0, 0)
+			timeout = _INFINITE
 		} else {
-			usleep2(int32(dt))
+			h = _INVALID_HANDLE_VALUE
+			timeout = uintptr(us) / 1000 // ms units
 		}
+		stdcall2(_WaitForSingleObject, h, timeout)
 	})
 }
 
